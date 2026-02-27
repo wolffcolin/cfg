@@ -5,20 +5,12 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <algorithm>
 
 struct Rule {
     std::string lhs;
     std::vector<std::string> rhs;
 };
-
-bool is_nonterminal(const std::string& s) {
-    for (char c : s) {
-        if (c >= 'A' && c <= 'Z') {
-            return true;
-        }
-    }
-    return false;
-}
 
 std::set<std::string> get_nt(const std::vector<Rule>& rules) {
     std::set<std::string> nts;
@@ -28,7 +20,7 @@ std::set<std::string> get_nt(const std::vector<Rule>& rules) {
     return nts;
 }
 
-std::set<std::string> compute_nullable_set(const std::vector<Rule>& rules) {
+std::set<std::string> compute_nullable_set(const std::vector<Rule>& rules, const std::set<std::string> &nonTerminals) {
     std::set<std::string> nullable;
 
     for (const Rule& r : rules) {
@@ -51,7 +43,7 @@ std::set<std::string> compute_nullable_set(const std::vector<Rule>& rules) {
 
             bool all_nullable = true;
             for (const std::string& sym : r.rhs) {
-                if (!is_nonterminal(sym)) {
+                if (nonTerminals.find(sym) == nonTerminals.end()) {
                     all_nullable = false;
                     break;
                 }
@@ -82,153 +74,69 @@ std::string find_start_symbol(const std::vector<Rule>& rules) {
     return "";
 }
 
-std::map<std::string, std::set<std::string>> compute_first_sets(const std::vector<Rule>& rules) {
-    std::set<std::string> nonterminals = get_nt(rules);
-    std::set<std::string> nullable = compute_nullable_set(rules);
-
-    std::map<std::string, std::set<std::string>> first;
-    for (const std::string& nt : nonterminals) {
-        first[nt] = std::set<std::string>();
+std::set<std::string> GetFirstSet(const std::vector<std::string> &input, const std::set<std::string> &terminals, const std::vector<struct Rule> &rules, const std::set<std::string> &nullableSet, std::set<std::string> &seenSet){
+    if (input.size() < 1){
+        return {};
     }
-
-    bool changed = true;
-    while (changed) {
-        changed = false;
-
-        for (const Rule& r : rules) {
-            const std::string& A = r.lhs;
-
-            if (r.rhs.empty()) {
-                if (first[A].insert("lambda").second) {
-                    changed = true;
-                }
-                continue;
+    if (terminals.find(input[0]) != terminals.end()){
+        return {input[0]};
+    }
+    std::set<std::string> output;
+    if (seenSet.find(input[0]) == seenSet.end()){
+        seenSet.insert(input[0]);
+        for (const auto &rul : rules){
+            if (input[0] == rul.lhs){
+                std::set<std::string> tmp = GetFirstSet(rul.rhs,terminals,rules,nullableSet,seenSet);
+                output.insert(tmp.begin(),tmp.end());
             }
+        }
+    }
+    if (nullableSet.find(input[0]) != nullableSet.end()){
+        std::set<std::string> tmp = GetFirstSet(std::vector<std::string>(input.begin() + 1, input.end()),terminals,rules,nullableSet,seenSet);
+        output.insert(tmp.begin(),tmp.end());
+    }
+    return output;
+}
 
-            bool all_nullable_prefix = true;
-
-            for (size_t i = 0; i < r.rhs.size(); i++) {
-                const std::string& X = r.rhs[i];
-
-                if (!is_nonterminal(X)) {
-                    if (first[A].insert(X).second) {
-                        changed = true;
+std::set<std::string> GetFollowSet(const std::string &input, const std::set<std::string> &terminals, const std::vector<struct Rule> &rules, const std::set<std::string> &nullableSet, std::set<std::string> &seenSet){
+    if (seenSet.find(input) != seenSet.end()){
+        return {};
+    }
+    seenSet.insert(input);
+    std::set<std::string> output;
+    for (const auto &rul : rules){
+        auto at = std::find(rul.rhs.begin(), rul.rhs.end(), input); //in the rhs
+        if (at != rul.rhs.end()){
+            auto leftOver = std::vector<std::string>(at + 1, rul.rhs.end());
+            if (std::distance(at, rul.rhs.end()) - 1 > 0){ //at the end
+                std::set<std::string> tmp = GetFirstSet(leftOver,terminals,rules,nullableSet,seenSet);
+                output.insert(tmp.begin(),tmp.end());
+                //check if all remaining are non terminals and nullable
+                bool allGood = 1;
+                for (const auto &item : leftOver){
+                    if (terminals.find(item) != terminals.end()){
+                        allGood = 0;
+                        break;
                     }
-                    all_nullable_prefix = false;
-                    break;
-                } else {
-                    for (const std::string& t : first[X]) {
-                        if (t == "lambda") continue;
-                        if (first[A].insert(t).second) {
-                            changed = true;
-                        }
-                    }
-
-                    if (!nullable.count(X)) {
-                        all_nullable_prefix = false;
+                    else if (nullableSet.find(item) == nullableSet.end()){
+                        allGood = 0;
                         break;
                     }
                 }
-            }
-
-            if (all_nullable_prefix) {
-                if (first[A].insert("lambda").second) {
-                    changed = true;
+                if (allGood){
+                    tmp = GetFollowSet(rul.lhs,terminals,rules,nullableSet,seenSet);
+                    output.insert(tmp.begin(),tmp.end());
                 }
             }
-        }
-    }
-
-    return first;
-}
-
-std::set<std::string> first_of_sequence(const std::vector<std::string>& seq, size_t start_index, const std::map<std::string, std::set<std::string>>& first, const std::set<std::string>& nullable) {
-    std::set<std::string> out;
-
-    if (start_index >= seq.size()) {
-        out.insert("lambda");
-        return out;
-    }
-
-    bool all_nullable = true;
-
-    for (size_t i = start_index; i < seq.size(); i++) {
-        const std::string& X = seq[i];
-
-        if (!is_nonterminal(X)) {
-            out.insert(X);
-            all_nullable = false;
-            break;
-        }
-
-        auto it = first.find(X);
-        if (it != first.end()) {
-            for (const std::string& t : it->second) {
-                if (t == "lambda") continue;
-                out.insert(t);
-            }
-        }
-
-        if (!nullable.count(X)) {
-            all_nullable = false;
-            break;
-        }
-    }
-
-    if (all_nullable) {
-        out.insert("lambda");
-    }
-
-    return out;
-}
-
-std::map<std::string, std::set<std::string>> compute_follow_sets(const std::vector<Rule>& rules, const std::map<std::string, std::set<std::string>>& first) {
-    std::set<std::string> nonterminals = get_nt(rules);
-    std::set<std::string> nullable = compute_nullable_set(rules);
-    std::string start_symbol = find_start_symbol(rules);
-
-    std::map<std::string, std::set<std::string>> follow;
-    for (const std::string& nt : nonterminals) {
-        follow[nt] = std::set<std::string>();
-    }
-
-    if (!start_symbol.empty()) {
-        follow[start_symbol].insert("$");
-    }
-
-    bool changed = true;
-    while (changed) {
-        changed = false;
-
-        for (const Rule& r : rules) {
-            const std::string& A = r.lhs;
-
-            for (size_t i = 0; i < r.rhs.size(); i++) {
-                const std::string& B = r.rhs[i];
-
-                if (!is_nonterminal(B)) continue;
-
-                std::set<std::string> first_beta = first_of_sequence(r.rhs, i + 1, first, nullable);
-
-                for (const std::string& t : first_beta) {
-                    if (t == "lambda") continue;
-                    if (follow[B].insert(t).second) {
-                        changed = true;
-                    }
-                }
-
-                if (first_beta.count("lambda")) {
-                    for (const std::string& t : follow[A]) {
-                        if (follow[B].insert(t).second) {
-                            changed = true;
-                        }
-                    }
-                }
+            else{
+                std::set<std::string> tmp = GetFollowSet(rul.lhs,terminals,rules,nullableSet,seenSet);
+                output.insert(tmp.begin(),tmp.end());
             }
         }
     }
 
-    return follow;
+
+    return output;
 }
 
 std::string concat_except_last(std::vector<std::string> input) {
@@ -237,6 +145,7 @@ std::string concat_except_last(std::vector<std::string> input) {
         contents += input[i];
     }
     return contents;
+    
 }
 
 
@@ -301,7 +210,7 @@ std::set<std::string> getAllSymbols(std::vector<struct Rule> rules) {
 
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
+    if (argc != 2) {
         std::cerr << "Usage: " << argv[0] << " <filename>\n";
         return 1;
     }
@@ -323,15 +232,20 @@ int main(int argc, char* argv[]) {
     auto wss = split_ws(contents);
 
     std::vector<struct Rule> rules; 
+    std::set<std::string> nonTerminals;
+    std::set<std::string> terminals;
+    std::set<std::string> nullableSet;
+    std::string start;
 
     bool expecting_lhs = true;
     std::string current_lhs;
     std::vector<std::string> current_alternative;
 
-    int i = 0;
+    uint i = 0;
     while (i < wss.size()) {
         if (expecting_lhs) {
             current_lhs = wss[i];
+            nonTerminals.insert(current_lhs);
             expecting_lhs = false;
             i += 2;
             continue;
@@ -367,12 +281,41 @@ int main(int argc, char* argv[]) {
         std::cout << item.lhs << " -> ";
         for (auto item2 : item.rhs) {
             std::cout << item2 << " ";
+            if (nonTerminals.find(item2) == nonTerminals.end()) terminals.insert(item2);
         }
         std::cout << std::endl;
         y++;
     }
+    start = find_start_symbol(rules);
+    std::cout << "Start Symbol: " << start << '\n';
+    std::cout << "Non-Terminals: " << nonTerminals.size();
+    for (const std::string &r : nonTerminals){
+        std::cout << ' ' << r;
+    }
+    std::cout << "\nTerminals: " << terminals.size();
+    for (const std::string &r : terminals){
+        std::cout << ' ' << r;
+    }
+    std::cout << '\n';
+    std::cout << "\nnullable_set: ";
+    nullableSet = compute_nullable_set(rules,nonTerminals);
+    for (const std::string &r : nullableSet){
+        std::cout << ' ' << r;
+    }
+    std::cout << '\n';
+    std::cout << "\nFirstSet: ";
+    std::set<std::string> seenSet;
+    for (const std::string &r : GetFirstSet(std::vector<std::string>({"sTar"}),terminals,rules,nullableSet,seenSet)){
+        std::cout << ' ' << r;
+    }
+    std::cout << '\n';
+    std::cout << "\nFollowSet: ";
+    seenSet.clear();
+    for (const std::string &r : GetFollowSet("eNd",terminals,rules,nullableSet,seenSet)){
+        std::cout << ' ' << r;
+    }
+    std::cout << '\n';
 
-    std::cout << "Start Symbol: " << find_start_symbol(rules) << std::endl; 
 
     return 0;
 }
