@@ -53,7 +53,7 @@ public:
     std::vector<Rule> rules;
     std::map<Symbol, std::vector<Rule>> productions_to;
     std::map<Symbol, std::vector<Rule>> productions_from;
-    std::map<Symbol, bool> derives_to_lambda_map;
+    std::set<Symbol> derives_to_lambda_set;
     std::map<Symbol, std::set<Symbol>> symbol_first_set;
     Symbol start_symbol;
 
@@ -124,7 +124,7 @@ public:
 
             bool all_nonterminals_and_derive_to_lambda = true;
             for(Symbol &sym : pi) {
-                if (!sym.is_nonterminal() || !derives_to_lambda_map[sym]) {
+                if (!sym.is_nonterminal() || !derives_to_lambda_set.count(sym)) {
                     all_nonterminals_and_derive_to_lambda = false;
                     break;
                 }
@@ -168,7 +168,7 @@ public:
             }
         }
 
-        if (derives_to_lambda_map[x] && !seq.empty()) {
+        if (derives_to_lambda_set.count(x) && !seq.empty()) {
             std::set<Symbol> G = first_set(seq, T);
             for (Symbol sym : G) {
                 f.insert(sym);
@@ -179,8 +179,8 @@ public:
     }
 
     bool derives_to_lambda(Symbol sym, std::vector<Rule> &t) {
-        if (derives_to_lambda_map.find(sym) != derives_to_lambda_map.end()) {
-            return derives_to_lambda_map[sym];
+        if (derives_to_lambda_set.count(sym)) {
+            return derives_to_lambda_set.find(sym) != derives_to_lambda_set.end();
         }
 
         for (Rule &rule : productions_from[sym]) {
@@ -189,7 +189,7 @@ public:
                 continue;
             }
             if (rule.rhs.size() == 1 && rule.rhs[0].is_lambda()) {
-                derives_to_lambda_map[sym] = true;
+                derives_to_lambda_set.insert(sym);
                 return true;
             }
             bool flag_continue = false;
@@ -213,11 +213,11 @@ public:
                 }
             }
             if (all_derive_lambda) {
-                derives_to_lambda_map[sym] = true;
+                derives_to_lambda_set.insert(sym);
                 return true;
             }
         }
-        derives_to_lambda_map[sym] = false;
+        derives_to_lambda_set.insert(sym);
         return false;
     }
 
@@ -300,7 +300,7 @@ int main(int argc, char* argv[]) {
 
     for (auto a : g.symbols) {
         std::cout<<a.representation<<" ";
-        std::cout<<g.derives_to_lambda_map[a]<<"\n";
+        std::cout<<(g.derives_to_lambda_set.count(a) > 0)<<"\n";
     }
 
     std::vector<Symbol> seq = {Symbol{"B"}};
