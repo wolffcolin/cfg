@@ -20,6 +20,104 @@ bool is_nonterminal(const std::string& s) {
     return false;
 }
 
+bool derivesToLambda(const std::string& L, const std::vector<Rule>& rules, std::set<const Rule*>& stackT) {
+    for (const Rule& p : rules) {
+        if (p.lhs != L) {
+            continue;
+        }
+
+        // avoid infinite recursion
+        if (stackT.count(&p)) {
+            continue;
+        }
+
+        // L -> lambda
+        if (p.rhs.empty()) {
+            return true;
+        }
+
+        // if RHS contains a terminal, cannot derive lambda
+        bool containsTerminal = false;
+        for (const std::string& sym : p.rhs) {
+            if (!is_nonterminal(sym)) {
+                containsTerminal = true;
+                break;
+            }
+        }
+
+        if (containsTerminal) {
+            continue;
+        }
+
+        // check if all symbols derive lambda
+        stackT.insert(&p);
+
+        bool allDeriveLambda = true;
+        for (const std::string& Xi : p.rhs) {
+            if (!derivesToLambda(Xi, rules, stackT)) {
+                allDeriveLambda = false;
+                break;
+            }
+        }
+
+        stackT.erase(&p);
+
+        if (allDeriveLambda) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::set<std::string> firstSet(const std::vector<std::string>& sequence, const std::vector<Rule>& rules, std::set<std::string>& T) {
+    std::set<std::string> F;
+
+    if (sequence.empty()) {
+        return F;
+    }
+
+    std::string X = sequence[0];
+
+    // If X is terminal -> FIRST = {X}
+    if (!is_nonterminal(X)) {
+        F.insert(X);
+        return F;
+    }
+
+    // Prevent infinite recursion
+    if (!T.count(X)) {
+        T.insert(X);
+
+        for (const Rule& p : rules) {
+            if (p.lhs != X) {
+                continue;
+            }
+
+            std::set<std::string> G = firstSet(p.rhs, rules, T);
+
+            F.insert(G.begin(), G.end());
+        }
+    }
+
+    // If X derives lambda, include FIRST(beta)
+    std::set<const Rule*> stackT;
+    if (derivesToLambda(X, rules, stackT)) {
+        if (sequence.size() > 1) {
+            std::vector<std::string> beta(sequence.begin() + 1, sequence.end());
+
+            std::set<std::string> G =
+                firstSet(beta, rules, T);
+
+            F.insert(G.begin(), G.end());
+        }
+    }
+
+    F.erase("lambda");
+
+    return F;
+}
+
 std::set<std::string> get_nt(const std::vector<Rule>& rules) {
     std::set<std::string> nts;
     for (const Rule& r : rules) {
@@ -299,7 +397,6 @@ std::set<std::string> getAllSymbols(std::vector<struct Rule> rules) {
     return symbols;
 }
 
-
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <filename>\n";
@@ -348,8 +445,8 @@ int main(int argc, char* argv[]) {
         if (wss[i] == "|") {
             rules.push_back(Rule{current_lhs, current_alternative});
             current_alternative.clear();
-        } else if (wss[i] == "lambda") {
-
+        } else if (wss[i] == "lambda" || wss[i] == "λ") { // changed this to include the lambda symbol as well as the lambda word
+            rules.push_back(Rule{current_lhs, {}});
         } else {
             current_alternative.push_back(wss[i]);
         }
@@ -373,6 +470,40 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "Start Symbol: " << find_start_symbol(rules) << std::endl; 
+    std::set<std::string> nonterminals = get_nt(rules);
+
+    std::cout << "\nprocedure derivesToLambda(L, stack T)\n";
+
+    for (const std::string& nt : nonterminals) {
+
+        std::set<const Rule*> stackT; // must start empty
+        bool result = derivesToLambda(nt, rules, stackT);
+
+        std::cout << "if (L is " << nt << ") return " << (result ? "true" : "false") << "\n";
+    }
+
+    std::cout << "\nprocedure firstSet(Xβ, set T)\n";
+
+    for (const std::string& nt : nonterminals) {
+
+        std::set<std::string> T; // must start empty
+        std::vector<std::string> seq = { nt };
+
+        std::set<std::string> F = firstSet(seq, rules, T);
+
+        std::cout << "if (Xβ[0] is " << nt << ") return {";
+
+        bool first_item = true;
+        for (const std::string& sym : F) {            
+            if (!first_item)
+                std::cout << ",";
+
+            std::cout << sym;
+            first_item = false;
+        }
+
+        std::cout << "}\n";
+    }
 
     return 0;
 }
