@@ -14,15 +14,6 @@ struct Symbol {
         return this->representation == "lambda";
     }
 
-    bool is_nonterminal() {
-        for (char c: this->representation) {
-            if (c >= 'A' && c <= 'Z') {
-                return true;
-            }
-        }
-        return false;
-    }
-
     bool is_eof() {
         return this->representation == "$";
     }
@@ -63,24 +54,29 @@ public:
         for (Rule &rule : rules) {
             nonterminals.insert(rule.lhs);
             productions_from[rule.lhs].push_back(rule);
+        }
+
+        bool lambda_is_symbol = false;
+        for (Rule &rule : rules) {
             for (Symbol &sym : rule.rhs) {
-                if (sym.is_eof()) {
-                    start_symbol = rule.lhs;
-                }
-                
-                if (sym.is_nonterminal()) {
-                    nonterminals.insert(sym);
-                    productions_to[sym].push_back(rule);
-                } else {
+                productions_to[sym].push_back(rule);
+                if (sym.is_eof()) start_symbol = rule.lhs;
+                if (sym.is_lambda()) lambda_is_symbol = true;
+                if (!sym.is_lambda() && !(nonterminals.count(sym))) {
                     terminals.insert(sym);
-                }
+                    productions_to[sym].push_back(rule);
+                } 
             }
         }
 
-        for (Symbol sym : nonterminals) 
+        for (Symbol sym : terminals)
             symbols.insert(sym);
-        for (Symbol sym : terminals) 
+        for (Symbol sym : nonterminals)
             symbols.insert(sym);
+
+        if(lambda_is_symbol) {
+            symbols.insert(Symbol{"lambda"});
+        }
 
         for (Symbol sym : nonterminals) {
             std::vector<Rule> stack;
@@ -103,39 +99,37 @@ public:
             size_t gamma = 0;
             for (size_t i = 0; i < rule.rhs.size(); i++) {
                 if (rule.rhs[i] == sym) {
-                    gamma = i;
-                    break;
+                    gamma = i + 1;
+                    std::vector<Symbol> pi;
+                    for (size_t i = gamma; i < rule.rhs.size(); i++) {
+                        pi.push_back(rule.rhs[i]);
+                    }
+
+                    if (pi.size() > 0) {
+                        std::set<Symbol> ns;
+                        std::set<Symbol> G = first_set(pi, ns);
+                        for (Symbol sym : G) {
+                            f.insert(sym);
+                        }
+                    }
+
+                    bool all_nonterminals_and_derive_to_lambda = true;
+                    for(Symbol &sym : pi) {
+                        if (!nonterminals.count(sym) || !derives_to_lambda_set.count(sym)) {
+                            all_nonterminals_and_derive_to_lambda = false;
+                            break;
+                        }
+                    }
+
+                    if (all_nonterminals_and_derive_to_lambda) {
+                        std::set<Symbol> G = follow_set(rule.lhs, T);
+                        for (Symbol sym : G) {
+                            f.insert(sym);
+                        }
+                    }
                 }
             }
 
-            gamma++;
-            std::vector<Symbol> pi;
-            for (size_t i = gamma; i < rule.rhs.size(); i++) {
-                pi.push_back(rule.rhs[gamma]);
-            }
-
-            if (pi.size() > 0) {
-                std::set<Symbol> ns;
-                std::set<Symbol> G = first_set(pi, ns);
-                for (Symbol sym : G) {
-                    f.insert(sym);
-                }
-            }
-
-            bool all_nonterminals_and_derive_to_lambda = true;
-            for(Symbol &sym : pi) {
-                if (!sym.is_nonterminal() || !derives_to_lambda_set.count(sym)) {
-                    all_nonterminals_and_derive_to_lambda = false;
-                    break;
-                }
-            }
-
-            if (all_nonterminals_and_derive_to_lambda) {
-                std::set<Symbol> G = follow_set(rule.lhs, T);
-                for (Symbol sym : G) {
-                    f.insert(sym);
-                }
-            }
         }
 
         return f;
@@ -151,7 +145,7 @@ public:
         }
         seq.pop_back();
 
-        if (!x.is_nonterminal()) {
+        if (!nonterminals.count(x)) {
             std::set<Symbol> s;
             s.insert({x});
             return s;
@@ -194,7 +188,7 @@ public:
             }
             bool flag_continue = false;
             for (Symbol &sym : rule.rhs) {
-                if (!sym.is_nonterminal()) {
+                if (!nonterminals.count(sym)) {
                     flag_continue = true;
                     break;
                 }
@@ -217,7 +211,6 @@ public:
                 return true;
             }
         }
-        derives_to_lambda_set.insert(sym);
         return false;
     }
 
