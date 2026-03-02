@@ -6,6 +6,9 @@
 #include <set>
 #include <map>
 
+/*
+grammar is stored as a flat vector<Rule> rules
+*/
 struct Rule {
     std::string lhs;
     std::vector<std::string> rhs;
