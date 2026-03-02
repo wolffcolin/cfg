@@ -1,304 +1,279 @@
 #include <iostream>
-#include <fstream>
-#include <sstream>
+#include <map>
+#include <set>
+#include <algorithm>
 #include <string>
 #include <vector>
-#include <set>
-#include <map>
+#include <fstream>
+#include <sstream>
 
-struct Rule {
-    std::string lhs;
-    std::vector<std::string> rhs;
+struct Symbol {
+    std::string representation;
+
+    bool is_lambda() {
+        return this->representation == "lambda";
+    }
+
+    bool is_eof() {
+        return this->representation == "$";
+    }
+
+    bool operator<(const Symbol &other) const {
+        return this->representation < other.representation;
+    }
+
+    bool operator==(const Symbol &other) const {
+        return this->representation == other.representation;
+    }
 };
 
-bool is_nonterminal(const std::string& s) {
-    for (char c : s) {
-        if (c >= 'A' && c <= 'Z') {
-            return true;
+struct Rule {
+    Symbol lhs;
+    std::vector<Symbol> rhs;
+
+    bool operator==(const Rule &other) const {
+        return (this->lhs == other.lhs) && (this->rhs == other.rhs);
+    }
+};
+
+class Grammar {
+public:
+    std::set<Symbol> symbols;
+    std::set<Symbol> nonterminals;
+    std::set<Symbol> terminals;
+    std::vector<Rule> rules;
+    std::map<Symbol, std::vector<Rule>> productions_to;
+    std::map<Symbol, std::vector<Rule>> productions_from;
+    std::set<Symbol> derives_to_lambda_set;
+    std::map<Symbol, std::set<Symbol>> symbol_first_set;
+    Symbol start_symbol;
+
+    Grammar(std::string path) {
+        parse_rules(path);
+
+        for (Rule &rule : rules) {
+            nonterminals.insert(rule.lhs);
+            productions_from[rule.lhs].push_back(rule);
         }
-    }
-    return false;
-}
 
-std::set<std::string> get_nt(const std::vector<Rule>& rules) {
-    std::set<std::string> nts;
-    for (const Rule& r : rules) {
-        nts.insert(r.lhs);
-    }
-    return nts;
-}
-
-std::set<std::string> compute_nullable_set(const std::vector<Rule>& rules) {
-    std::set<std::string> nullable;
-
-    for (const Rule& r : rules) {
-        if (r.rhs.empty()) {
-            nullable.insert(r.lhs);
-        }
-    }
-
-    bool changed = true;
-    while (changed) {
-        changed = false;
-
-        for (const Rule& r : rules) {
-            if (nullable.count(r.lhs)) continue;
-
-            if (r.rhs.empty()) {
-                if (nullable.insert(r.lhs).second) changed = true;
-                continue;
-            }
-
-            bool all_nullable = true;
-            for (const std::string& sym : r.rhs) {
-                if (!is_nonterminal(sym)) {
-                    all_nullable = false;
-                    break;
-                }
-                if (!nullable.count(sym)) {
-                    all_nullable = false;
-                    break;
-                }
-            }
-
-            if (all_nullable) {
-                if (nullable.insert(r.lhs).second) changed = true;
+        bool lambda_is_symbol = false;
+        for (Rule &rule : rules) {
+            for (Symbol &sym : rule.rhs) {
+                productions_to[sym].push_back(rule);
+                if (sym.is_eof()) start_symbol = rule.lhs;
+                if (sym.is_lambda()) lambda_is_symbol = true;
+                if (!sym.is_lambda() && !(nonterminals.count(sym))) {
+                    terminals.insert(sym);
+                    productions_to[sym].push_back(rule);
+                } 
             }
         }
-    }
 
-    return nullable;
-}
+        for (Symbol sym : terminals)
+            symbols.insert(sym);
+        for (Symbol sym : nonterminals)
+            symbols.insert(sym);
 
-std::string find_start_symbol(const std::vector<Rule>& rules) {
-    for (const Rule& r : rules) {
-        for (const std::string& sym : r.rhs) {
-            if (sym == "$") {
-                return r.lhs;
-            }
+        if(lambda_is_symbol) {
+            symbols.insert(Symbol{"lambda"});
+        }
+
+        for (Symbol sym : nonterminals) {
+            std::vector<Rule> stack;
+            derives_to_lambda(sym, stack);
         }
     }
-    if (!rules.empty()) return rules[0].lhs;
-    return "";
-}
 
-std::map<std::string, std::set<std::string>> compute_first_sets(const std::vector<Rule>& rules) {
-    std::set<std::string> nonterminals = get_nt(rules);
-    std::set<std::string> nullable = compute_nullable_set(rules);
+    std::set<Symbol> follow_set(
+        Symbol sym,
+        std::set<Symbol> T
+    ){
+        if (T.count(sym)) {
+            std::set<Symbol> st;
+            return st;
+        }
 
-    std::map<std::string, std::set<std::string>> first;
-    for (const std::string& nt : nonterminals) {
-        first[nt] = std::set<std::string>();
-    }
-
-    bool changed = true;
-    while (changed) {
-        changed = false;
-
-        for (const Rule& r : rules) {
-            const std::string& A = r.lhs;
-
-            if (r.rhs.empty()) {
-                if (first[A].insert("lambda").second) {
-                    changed = true;
-                }
-                continue;
-            }
-
-            bool all_nullable_prefix = true;
-
-            for (size_t i = 0; i < r.rhs.size(); i++) {
-                const std::string& X = r.rhs[i];
-
-                if (!is_nonterminal(X)) {
-                    if (first[A].insert(X).second) {
-                        changed = true;
+        T.insert(sym);
+        std::set<Symbol> f;
+        for (Rule &rule : productions_to[sym]) {
+            size_t gamma = 0;
+            for (size_t i = 0; i < rule.rhs.size(); i++) {
+                if (rule.rhs[i] == sym) {
+                    gamma = i + 1;
+                    std::vector<Symbol> pi;
+                    for (size_t i = gamma; i < rule.rhs.size(); i++) {
+                        pi.push_back(rule.rhs[i]);
                     }
-                    all_nullable_prefix = false;
-                    break;
-                } else {
-                    for (const std::string& t : first[X]) {
-                        if (t == "lambda") continue;
-                        if (first[A].insert(t).second) {
-                            changed = true;
+
+                    if (pi.size() > 0) {
+                        std::set<Symbol> ns;
+                        std::set<Symbol> G = first_set(pi, ns);
+                        for (Symbol sym : G) {
+                            f.insert(sym);
                         }
                     }
 
-                    if (!nullable.count(X)) {
-                        all_nullable_prefix = false;
-                        break;
+                    bool all_nonterminals_and_derive_to_lambda = true;
+                    for(Symbol &sym : pi) {
+                        if (!nonterminals.count(sym) || !derives_to_lambda_set.count(sym)) {
+                            all_nonterminals_and_derive_to_lambda = false;
+                            break;
+                        }
                     }
-                }
-            }
 
-            if (all_nullable_prefix) {
-                if (first[A].insert("lambda").second) {
-                    changed = true;
-                }
-            }
-        }
-    }
-
-    return first;
-}
-
-std::set<std::string> first_of_sequence(const std::vector<std::string>& seq, size_t start_index, const std::map<std::string, std::set<std::string>>& first, const std::set<std::string>& nullable) {
-    std::set<std::string> out;
-
-    if (start_index >= seq.size()) {
-        out.insert("lambda");
-        return out;
-    }
-
-    bool all_nullable = true;
-
-    for (size_t i = start_index; i < seq.size(); i++) {
-        const std::string& X = seq[i];
-
-        if (!is_nonterminal(X)) {
-            out.insert(X);
-            all_nullable = false;
-            break;
-        }
-
-        auto it = first.find(X);
-        if (it != first.end()) {
-            for (const std::string& t : it->second) {
-                if (t == "lambda") continue;
-                out.insert(t);
-            }
-        }
-
-        if (!nullable.count(X)) {
-            all_nullable = false;
-            break;
-        }
-    }
-
-    if (all_nullable) {
-        out.insert("lambda");
-    }
-
-    return out;
-}
-
-std::map<std::string, std::set<std::string>> compute_follow_sets(const std::vector<Rule>& rules, const std::map<std::string, std::set<std::string>>& first) {
-    std::set<std::string> nonterminals = get_nt(rules);
-    std::set<std::string> nullable = compute_nullable_set(rules);
-    std::string start_symbol = find_start_symbol(rules);
-
-    std::map<std::string, std::set<std::string>> follow;
-    for (const std::string& nt : nonterminals) {
-        follow[nt] = std::set<std::string>();
-    }
-
-    if (!start_symbol.empty()) {
-        follow[start_symbol].insert("$");
-    }
-
-    bool changed = true;
-    while (changed) {
-        changed = false;
-
-        for (const Rule& r : rules) {
-            const std::string& A = r.lhs;
-
-            for (size_t i = 0; i < r.rhs.size(); i++) {
-                const std::string& B = r.rhs[i];
-
-                if (!is_nonterminal(B)) continue;
-
-                std::set<std::string> first_beta = first_of_sequence(r.rhs, i + 1, first, nullable);
-
-                for (const std::string& t : first_beta) {
-                    if (t == "lambda") continue;
-                    if (follow[B].insert(t).second) {
-                        changed = true;
-                    }
-                }
-
-                if (first_beta.count("lambda")) {
-                    for (const std::string& t : follow[A]) {
-                        if (follow[B].insert(t).second) {
-                            changed = true;
+                    if (all_nonterminals_and_derive_to_lambda) {
+                        std::set<Symbol> G = follow_set(rule.lhs, T);
+                        for (Symbol sym : G) {
+                            f.insert(sym);
                         }
                     }
                 }
             }
+
         }
+
+        return f;
     }
 
-    return follow;
-}
+    std::set<Symbol> first_set(
+        std::vector<Symbol>& seq,
+        std::set<Symbol>& T
+    ) {
+        Symbol x = seq[0];
+        for (size_t i = 0; i < seq.size() - 1; i++) {
+            seq[i] = seq[i + 1];
+        }
+        seq.pop_back();
 
-std::string concat_except_last(std::vector<std::string> input) {
-    std::string contents = "";
-    for (size_t i = 0; i < (input.size() - 1); i++) {
-        contents += input[i];
+        if (!nonterminals.count(x)) {
+            std::set<Symbol> s;
+            s.insert({x});
+            return s;
+        }
+
+        std::set<Symbol> f;
+        if (!T.count(x)) {
+            T.insert(x);
+            for (Rule &rule : productions_from[x]) {
+                std::set<Symbol> G = first_set(rule.rhs, T);
+                for (Symbol sym : G) {
+                    f.insert(sym);
+                }
+            }
+        }
+
+        if (derives_to_lambda_set.count(x) && !seq.empty()) {
+            std::set<Symbol> G = first_set(seq, T);
+            for (Symbol sym : G) {
+                f.insert(sym);
+            }
+        }
+
+        return f;
     }
-    return contents;
-}
 
+    bool derives_to_lambda(Symbol sym, std::vector<Rule> &t) {
+        if (derives_to_lambda_set.count(sym)) {
+            return derives_to_lambda_set.find(sym) != derives_to_lambda_set.end();
+        }
 
+        for (Rule &rule : productions_from[sym]) {
+            // O(n) search; can be optimized with std::set
+            if (std::find(t.begin(), t.end(), rule) != t.end()) {
+                continue;
+            }
+            if (rule.rhs.size() == 1 && rule.rhs[0].is_lambda()) {
+                derives_to_lambda_set.insert(sym);
+                return true;
+            }
+            bool flag_continue = false;
+            for (Symbol &sym : rule.rhs) {
+                if (!nonterminals.count(sym)) {
+                    flag_continue = true;
+                    break;
+                }
+            }
+            if (flag_continue) {
+                continue;
+            }
 
-std::vector<std::string> split(const std::string& s, const std::string& delimiter) {
-    std::vector<std::string> result;
-    size_t start = 0;
-    size_t end = s.find(delimiter);
-
-    while (end != std::string::npos) {
-        result.push_back(s.substr(start, end - start));
-        start = end + delimiter.length();
-        end = s.find(delimiter, start);
-    }
-
-    result.push_back(s.substr(start));
-    return result;
-}
-
-std::vector<std::string> split_ws(const std::string& s) {
-    std::istringstream iss(s);
-    std::vector<std::string> out;
-    for (std::string tok; iss >> tok; ) out.push_back(tok);
-    return out;
-}
-
-bool nullable(std::string nonterminal, std::vector<struct Rule> rules) {
-    for (auto rule : rules) {
-        if (rule.lhs == nonterminal) {
-            if (rule.rhs.empty()) {
+            bool all_derive_lambda = true;
+            for (Symbol &sym : rule.rhs) {
+                t.push_back(rule);
+                all_derive_lambda = derives_to_lambda(sym, t);
+                t.pop_back();
+                if (!all_derive_lambda) {
+                    break;
+                }
+            }
+            if (all_derive_lambda) {
+                derives_to_lambda_set.insert(sym);
                 return true;
             }
         }
+        return false;
     }
-    return false;
-}
 
-std::map<std::string, std::vector<std::vector<std::string>>> vec2map(std::vector<struct Rule> rules) {
-    std::map<std::string, std::vector<std::vector<std::string>>> map;
-    for (auto rule : rules) {
-        if (map.find(rule.lhs) == map.end()) {
-            std::vector<std::vector<std::string>> temp;
-            temp.push_back(rule.rhs);
-            map[rule.lhs] = temp;
-        } else {
-            map[rule.lhs].push_back(rule.rhs);
+private:
+    void parse_rules(std::string path) {
+        std::ifstream infile(path);
+        if (!infile) {
+            std::cerr << "Error opening file\n";
+            exit(1);
+        }
+
+        std::string contents = "";
+
+        std::string line;
+        while (std::getline(infile, line)) {
+            contents += line;
+            contents += " ";
+        }
+
+        auto wss = split_ws(contents);
+
+        bool expecting_lhs = true;
+        Symbol current_lhs;
+        std::vector<Symbol> current_alternative;
+
+        size_t i = 0;
+        while (i < wss.size()) {
+            if (expecting_lhs) {
+                current_lhs = Symbol{wss[i]};
+                expecting_lhs = false;
+                i += 2;
+                continue;
+            } 
+
+            if (i + 1 < wss.size() && wss[i+1] == "->") {
+                this->rules.push_back(Rule{current_lhs, current_alternative});
+                current_alternative.clear();
+                expecting_lhs = true;
+                continue;
+            }
+
+            if (wss[i] == "|") {
+                rules.push_back(Rule{current_lhs, current_alternative});
+                current_alternative.clear();
+            } else {
+                current_alternative.push_back(Symbol{wss[i]});
+            }
+        
+            i++;
+        }
+
+        if (!expecting_lhs) {
+            rules.push_back(Rule{current_lhs, current_alternative});
         }
     }
-    return map;
-}
 
-std::set<std::string> getAllSymbols(std::vector<struct Rule> rules) {
-    std::set<std::string> symbols;
-
-    for (auto rule : rules) {
-        symbols.insert(rule.lhs);
-        symbols.insert(rule.rhs.begin(), rule.rhs.end());
+    std::vector<std::string> split_ws(const std::string& s) {
+        std::istringstream iss(s);
+        std::vector<std::string> out;
+        for (std::string tok; iss >> tok; ) out.push_back(tok);
+        return out;
     }
-
-    return symbols;
-}
-
+};
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
@@ -306,73 +281,32 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::ifstream infile(argv[1]);
-    if (!infile) {
-        std::cerr << "Error opening file\n";
-        return 1;
-    }
+    Grammar g(argv[1]);
 
-    std::string contents = "";
-
-    std::string line;
-    while (std::getline(infile, line)) {
-        contents += line;
-        contents += " ";
-    }
-
-    auto wss = split_ws(contents);
-
-    std::vector<struct Rule> rules; 
-
-    bool expecting_lhs = true;
-    std::string current_lhs;
-    std::vector<std::string> current_alternative;
-
-    int i = 0;
-    while (i < wss.size()) {
-        if (expecting_lhs) {
-            current_lhs = wss[i];
-            expecting_lhs = false;
-            i += 2;
-            continue;
-        } 
-
-        if (i + 1 < wss.size() && wss[i+1] == "->") {
-            rules.push_back(Rule{current_lhs, current_alternative});
-            current_alternative.clear();
-            current_lhs.clear();
-            expecting_lhs = true;
-            continue;
+    for (auto r : g.rules) {
+        std::cout << r.lhs.representation << " -> ";
+        for (auto sym : r.rhs) {
+            std::cout<<sym.representation<<" ";
         }
-
-        if (wss[i] == "|") {
-            rules.push_back(Rule{current_lhs, current_alternative});
-            current_alternative.clear();
-        } else if (wss[i] == "lambda") {
-
-        } else {
-            current_alternative.push_back(wss[i]);
-        }
-        
-        i++;
+        std::cout<<'\n';
     }
 
-    if (!expecting_lhs) {
-        rules.push_back(Rule{current_lhs, current_alternative});
+    for (auto a : g.symbols) {
+        std::cout<<a.representation<<" ";
+        std::cout<<(g.derives_to_lambda_set.count(a) > 0)<<"\n";
     }
 
-    int y = 0;
-    for (auto item : rules) {
-        std::cout << "(" << y << ") ";
-        std::cout << item.lhs << " -> ";
-        for (auto item2 : item.rhs) {
-            std::cout << item2 << " ";
-        }
-        std::cout << std::endl;
-        y++;
+    std::vector<Symbol> seq = {Symbol{"B"}};
+    auto st = std::set<Symbol>();
+    for (auto a : g.first_set(seq, st)) {
+        std::cout << a.representation << "\n";
     }
 
-    std::cout << "Start Symbol: " << find_start_symbol(rules) << std::endl; 
+    
+    st = std::set<Symbol>();
+    for (auto a : g.follow_set(Symbol{"B"}, st)) {
+        std::cout << a.representation << "\n";
+    }
 
     return 0;
 }
