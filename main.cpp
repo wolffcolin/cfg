@@ -1,11 +1,15 @@
+#include <deque>
 #include <iostream>
 #include <map>
 #include <set>
 #include <algorithm>
+#include <stack>
 #include <string>
 #include <vector>
 #include <fstream>
 #include <sstream>
+
+std::vector<std::string> split_ws(const std::string& s);
 
 struct Symbol {
     std::string representation;
@@ -42,6 +46,43 @@ struct Rule {
 
     bool operator==(const Rule &other) const {
         return (this->lhs == other.lhs) && (this->rhs == other.rhs);
+    }
+};
+
+
+struct Token {
+    std::string token_type;
+    std::string src_value;
+};
+
+struct TokenStream {
+    std::deque<Token> stream;
+    
+    TokenStream(std::string path) {
+        std::ifstream infile(path);
+        if (!infile) {
+            std::cerr << "Error opening file\n";
+            exit(1);
+        }
+
+        std::string line;
+        while (std::getline(infile, line)) {
+            std::vector<std::string> parts = split_ws(line);
+            if (parts.size() == 0) break;
+            
+            if (parts.size() == 2) {
+                stream.push_back(Token{parts[0], parts[1]});
+            } else {
+                stream.push_back(Token{parts[0], ""});
+            }
+        }
+    }
+
+    std::vector<std::string> split_ws(const std::string& s) {
+        std::istringstream iss(s);
+        std::vector<std::string> out;
+        for (std::string tok; iss >> tok; ) out.push_back(tok);
+        return out;
     }
 };
 
@@ -233,6 +274,99 @@ public:
         return false;
     }
 
+    struct ParseNode {
+        Symbol symbol;
+        Token token;
+        std::vector<ParseNode> children;
+
+        ParseNode() = default;
+
+        ParseNode(const Symbol& sym)
+            : symbol(sym) {}
+
+        ParseNode(const Symbol& sym, const Token& tok)
+            : symbol(sym), token(tok) {}
+    };
+
+    struct StackNode {
+        bool is_marker;
+        Symbol symbol;
+
+        StackNode(bool marker)
+            : is_marker(marker) {}
+
+        StackNode(bool marker, const Symbol& sym)
+            : is_marker(marker), symbol(sym) {}
+    };
+
+    ParseNode ll_tabular_parsing(
+        std::map<Symbol, std::map<Symbol, int>> &parse_table,
+        TokenStream& ts
+    ) {
+        std::stack<ParseNode*> traversal_stack;
+        std::stack<StackNode> k;
+
+        ParseNode root(start_symbol);
+        traversal_stack.push(&root);
+
+        k.push(StackNode(true));
+        k.push(StackNode(false, start_symbol));
+
+        while (!k.empty()) {
+            StackNode x = k.top();
+            k.pop();
+
+            if (x.is_marker) {
+                traversal_stack.pop();
+                continue;
+            }
+
+            if (nonterminals.count(x.symbol)) {
+                Symbol lookahead{ts.stream.front().token_type};
+
+                if (!parse_table.count(x.symbol) ||
+                    !parse_table[x.symbol].count(lookahead)) {
+                    std::cerr << "Parse error\n";
+                    exit(1);
+                }
+
+                int rule_index = parse_table[x.symbol][lookahead];
+
+                traversal_stack.top()->children.emplace_back(x.symbol);
+                ParseNode* new_node = &traversal_stack.top()->children.back();
+
+                traversal_stack.push(new_node);
+                k.push(StackNode(true));
+
+                auto& rhs = rules[rule_index].rhs;
+
+                for (int i = (int)rhs.size() - 1; i >= 0; i--) {
+                    k.push(StackNode(false, rhs[i]));
+                }
+            } 
+            else {
+                if (!x.symbol.is_lambda()) {
+                    if (ts.stream.empty() ||
+                        x.symbol.representation != ts.stream.front().token_type) {
+                        std::cerr << "Parse error\n";
+                        exit(1);
+                    }
+
+                    traversal_stack.top()->children.emplace_back(
+                        x.symbol,
+                        ts.stream.front()
+                    );
+
+                    ts.stream.pop_front();
+                } 
+                else {
+                    traversal_stack.top()->children.emplace_back(x.symbol);
+                }
+            }
+        }
+
+        return root;
+    }
 private:
     void parse_rules(std::string path) {
         std::ifstream infile(path);
@@ -340,9 +474,11 @@ private:
 
 };
 
+
+
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <filename>\n";
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <grammar_filename> <tokenstream_filename>\n";
         return 1;
     }
 
