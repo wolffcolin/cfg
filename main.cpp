@@ -10,11 +10,11 @@
 struct Symbol {
     std::string representation;
 
-    bool is_lambda() {
+    bool is_lambda() const{
         return this->representation == "lambda";
     }
 
-    bool is_eof() {
+    bool is_eof() const{
         return this->representation == "$";
     }
 
@@ -25,7 +25,16 @@ struct Symbol {
     bool operator==(const Symbol &other) const {
         return this->representation == other.representation;
     }
+
+    bool operator!=(const Symbol &other) const {
+        return this->representation != other.representation;
+    }
 };
+
+std::ostream& operator<<(std::ostream& os, const Symbol& sym) {
+    os << sym.representation;
+    return os;
+}
 
 struct Rule {
     Symbol lhs;
@@ -42,11 +51,14 @@ public:
     std::set<Symbol> nonterminals;
     std::set<Symbol> terminals;
     std::vector<Rule> rules;
+    std::vector<std::set<Symbol>> predictSets;
     std::map<Symbol, std::vector<Rule>> productions_to;
     std::map<Symbol, std::vector<Rule>> productions_from;
     std::set<Symbol> derives_to_lambda_set;
     std::map<Symbol, std::set<Symbol>> symbol_first_set;
     Symbol start_symbol;
+    std::set<Symbol> jointPredictSets;
+    std::map<Symbol,std::map<Symbol,uint>> parsingTable;
 
     Grammar(std::string path) {
         parse_rules(path);
@@ -82,6 +94,12 @@ public:
             std::vector<Rule> stack;
             derives_to_lambda(sym, stack);
         }
+
+        for (const auto &rul : rules){
+            predictSets.push_back(getPredictSet(rul));
+        }
+        jointPredictSets = getJoint();
+        makeParsingTable();
     }
 
     std::set<Symbol> follow_set(
@@ -101,21 +119,21 @@ public:
                 if (rule.rhs[i] == sym) {
                     gamma = i + 1;
                     std::vector<Symbol> pi;
-                    for (size_t i = gamma; i < rule.rhs.size(); i++) {
-                        pi.push_back(rule.rhs[i]);
+                    for (size_t j = gamma; j < rule.rhs.size(); j++) {
+                        pi.push_back(rule.rhs[j]);
                     }
 
                     if (pi.size() > 0) {
                         std::set<Symbol> ns;
                         std::set<Symbol> G = first_set(pi, ns);
-                        for (Symbol sym : G) {
-                            f.insert(sym);
+                        for (Symbol symb : G) {
+                            if (!sym.is_lambda()) f.insert(symb);
                         }
                     }
 
                     bool all_nonterminals_and_derive_to_lambda = true;
-                    for(Symbol &sym : pi) {
-                        if (!nonterminals.count(sym) || !derives_to_lambda_set.count(sym)) {
+                    for(Symbol &symb : pi) {
+                        if (!nonterminals.count(symb) || !derives_to_lambda_set.count(symb)) {
                             all_nonterminals_and_derive_to_lambda = false;
                             break;
                         }
@@ -123,8 +141,8 @@ public:
 
                     if (all_nonterminals_and_derive_to_lambda) {
                         std::set<Symbol> G = follow_set(rule.lhs, T);
-                        for (Symbol sym : G) {
-                            f.insert(sym);
+                        for (Symbol symb : G) {
+                            if (!sym.is_lambda()) f.insert(symb);
                         }
                     }
                 }
@@ -136,16 +154,17 @@ public:
     }
 
     std::set<Symbol> first_set(
-        std::vector<Symbol>& seq,
+        const std::vector<Symbol>& sequ,
         std::set<Symbol>& T
     ) {
+        std::vector<Symbol> seq(sequ);
         Symbol x = seq[0];
         for (size_t i = 0; i < seq.size() - 1; i++) {
             seq[i] = seq[i + 1];
         }
         seq.pop_back();
 
-        if (!nonterminals.count(x)) {
+        if (terminals.count(x)) {
             std::set<Symbol> s;
             s.insert({x});
             return s;
@@ -157,7 +176,7 @@ public:
             for (Rule &rule : productions_from[x]) {
                 std::set<Symbol> G = first_set(rule.rhs, T);
                 for (Symbol sym : G) {
-                    f.insert(sym);
+                    if (!sym.is_lambda()) f.insert(sym);
                 }
             }
         }
@@ -165,14 +184,14 @@ public:
         if (derives_to_lambda_set.count(x) && !seq.empty()) {
             std::set<Symbol> G = first_set(seq, T);
             for (Symbol sym : G) {
-                f.insert(sym);
+                if (!sym.is_lambda()) f.insert(sym);
             }
         }
 
         return f;
     }
 
-    bool derives_to_lambda(Symbol sym, std::vector<Rule> &t) {
+    bool derives_to_lambda(const Symbol sym, std::vector<Rule> &t) {
         if (derives_to_lambda_set.count(sym)) {
             return derives_to_lambda_set.find(sym) != derives_to_lambda_set.end();
         }
@@ -187,8 +206,8 @@ public:
                 return true;
             }
             bool flag_continue = false;
-            for (Symbol &sym : rule.rhs) {
-                if (!nonterminals.count(sym)) {
+            for (Symbol &symb : rule.rhs) {
+                if (!nonterminals.count(symb)) {
                     flag_continue = true;
                     break;
                 }
@@ -198,9 +217,9 @@ public:
             }
 
             bool all_derive_lambda = true;
-            for (Symbol &sym : rule.rhs) {
+            for (Symbol &symb : rule.rhs) {
                 t.push_back(rule);
-                all_derive_lambda = derives_to_lambda(sym, t);
+                all_derive_lambda = derives_to_lambda(symb, t);
                 t.pop_back();
                 if (!all_derive_lambda) {
                     break;
@@ -273,6 +292,52 @@ private:
         for (std::string tok; iss >> tok; ) out.push_back(tok);
         return out;
     }
+
+    std::set<Symbol> getPredictSet(const Rule &rule){
+        std::set<Symbol> t;
+        std::set<Symbol> out(first_set(rule.rhs,t));
+        for (const auto &s : rule.rhs){
+            if (!s.is_lambda() && derives_to_lambda_set.find(s) == derives_to_lambda_set.end()) return out;
+        }
+        t.clear();
+        std::set<Symbol> out2(follow_set(rule.lhs,t));
+        out.insert(out2.begin(),out2.end());
+        return out;
+    }
+
+    std::set<Symbol> getJoint() const{
+        std::set<Symbol> out;
+        for (uint i=0;i<predictSets.size()-1; ++i){
+            for (uint j=i+1;j<predictSets.size(); ++j){
+                if (rules[i].lhs != rules[j].lhs || out.find(rules[i].lhs) != out.end()) continue;
+                auto it1 = predictSets[i].begin();
+                auto it2 = predictSets[j].begin();
+
+                while (it1 != predictSets[i].end() && it2 != predictSets[j].end()) {
+                    if (*it1 < *it2) {
+                        ++it1;
+                    } else if (*it2 < *it1) {
+                        ++it2;
+                    } else {
+                        std::cout << rules[i].lhs << '\n';
+                        out.insert(rules[i].lhs); // Found a common element
+                        break;
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    void makeParsingTable(){
+        for (uint i(0); i<predictSets.size();++i){
+            for (const auto &s : predictSets[i]){
+                parsingTable[rules[i].lhs][s] = i;
+            }
+        }
+    }
+
+
 };
 
 int main(int argc, char* argv[]) {
@@ -283,6 +348,7 @@ int main(int argc, char* argv[]) {
 
     Grammar g(argv[1]);
 
+    std::cout << "Rules:\n";
     for (auto r : g.rules) {
         std::cout << r.lhs.representation << " -> ";
         for (auto sym : r.rhs) {
@@ -291,21 +357,61 @@ int main(int argc, char* argv[]) {
         std::cout<<'\n';
     }
 
+    std::cout << "symbols:\n";
     for (auto a : g.symbols) {
         std::cout<<a.representation<<" ";
         std::cout<<(g.derives_to_lambda_set.count(a) > 0)<<"\n";
     }
 
-    std::vector<Symbol> seq = {Symbol{"B"}};
+    std::cout << "terminals S:\n";
+    for (auto a : g.terminals) {
+        std::cout << a << ' ';
+    }
+    std::cout << '\n';
+
+    std::cout << "nonterminals S:\n";
+    for (auto a : g.nonterminals) {
+        std::cout << a << ' ';
+    }
+    std::cout << '\n';
+
+    std::cout << "first_set S:\n";
+    std::vector<Symbol> seq = {Symbol{"S"}};
     auto st = std::set<Symbol>();
     for (auto a : g.first_set(seq, st)) {
-        std::cout << a.representation << "\n";
+        std::cout << a.representation << ' ';
     }
+    std::cout << '\n';
 
     
+    std::cout << "follow_set A:\n";
     st = std::set<Symbol>();
-    for (auto a : g.follow_set(Symbol{"B"}, st)) {
-        std::cout << a.representation << "\n";
+    for (auto a : g.follow_set(Symbol{"A"}, st)) {
+        std::cout << a.representation << ' ';
+    }
+    std::cout << '\n';
+
+    std::cout << "Pred Sets:\n";
+    for (const auto &ps : g.predictSets) {
+        for (const auto &p : ps) {
+            std::cout << p << ' ';
+        }
+        std::cout << '\n';
+    }
+
+    std::cout << "Joint Pred Sets:\n";
+    for (const auto &ps : g.jointPredictSets) {
+        std::cout << ps << ' ';
+    }
+    std::cout << '\n';
+
+    std::cout << "Pred Sets:\n";
+    for (const auto &row : g.parsingTable) {
+        std::cout << row.first << ' ';
+        for (const auto &p : row.second) {
+            std::cout << p.first << ':' << p.second << ' ';
+        }
+        std::cout << '\n';
     }
 
     return 0;
