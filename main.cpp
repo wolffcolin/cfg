@@ -405,7 +405,7 @@ int main(int argc, char* argv[]) {
     }
     std::cout << '\n';
 
-    std::cout << "Pred Sets:\n";
+    std::cout << "Parse Table:\n";
     for (const auto &row : g.parsingTable) {
         std::cout << row.first << ' ';
         for (const auto &p : row.second) {
