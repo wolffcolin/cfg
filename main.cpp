@@ -1,6 +1,8 @@
 #include <deque>
+#include <functional>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <set>
 #include <algorithm>
 #include <stack>
@@ -69,13 +71,15 @@ struct TokenStream {
         while (std::getline(infile, line)) {
             std::vector<std::string> parts = split_ws(line);
             if (parts.size() == 0) break;
-            
+
             if (parts.size() == 2) {
                 stream.push_back(Token{parts[0], parts[1]});
             } else {
                 stream.push_back(Token{parts[0], ""});
             }
         }
+
+        stream.push_back(Token{"$", ""});
     }
 
     std::vector<std::string> split_ws(const std::string& s) {
@@ -277,40 +281,44 @@ public:
     struct ParseNode {
         Symbol symbol;
         Token token;
-        std::vector<ParseNode> children;
+        std::vector<std::unique_ptr<ParseNode>> children;
+        
+        ParseNode() {}
 
-        ParseNode() = default;
+        ParseNode(const Symbol& sym) {
+            symbol = sym;
+        }
 
-        ParseNode(const Symbol& sym)
-            : symbol(sym) {}
-
-        ParseNode(const Symbol& sym, const Token& tok)
-            : symbol(sym), token(tok) {}
+        ParseNode(const Token& tok) {
+            token = tok;
+        }
     };
 
     struct StackNode {
         bool is_marker;
         Symbol symbol;
 
-        StackNode(bool marker)
-            : is_marker(marker) {}
+        StackNode() {
+            is_marker = true;
+        }
 
-        StackNode(bool marker, const Symbol& sym)
-            : is_marker(marker), symbol(sym) {}
+        StackNode(const Symbol& sym) {
+            is_marker = false;
+            symbol = sym;
+        }
     };
 
-    ParseNode ll_tabular_parsing(
-        std::map<Symbol, std::map<Symbol, int>> &parse_table,
+    std::unique_ptr<ParseNode> ll_tabular_parsing(
         TokenStream& ts
     ) {
         std::stack<ParseNode*> traversal_stack;
         std::stack<StackNode> k;
 
-        ParseNode root(start_symbol);
-        traversal_stack.push(&root);
+        auto root = std::make_unique<ParseNode>();
+        traversal_stack.push(root.get());
 
-        k.push(StackNode(true));
-        k.push(StackNode(false, start_symbol));
+        k.push(StackNode());
+        k.push(StackNode(start_symbol));
 
         while (!k.empty()) {
             StackNode x = k.top();
@@ -322,46 +330,31 @@ public:
             }
 
             if (nonterminals.count(x.symbol)) {
-                Symbol lookahead{ts.stream.front().token_type};
+                // Add x as a child to traversal_stack.top()
+                auto new_node = std::make_unique<ParseNode>(x.symbol);
+                ParseNode *raw = new_node.get();
 
-                if (!parse_table.count(x.symbol) ||
-                    !parse_table[x.symbol].count(lookahead)) {
-                    std::cerr << "Parse error\n";
-                    exit(1);
+                traversal_stack.top()->children.push_back(std::move(new_node));
+                traversal_stack.push(raw);
+                // Add a new marker to the stack
+                k.push(StackNode());
+
+                // Push the RHS of the rule to the stack in reverse order
+                Symbol tsSymbol = {ts.stream.front().token_type};
+                size_t rule_index = parsingTable[x.symbol][tsSymbol];
+
+                for(size_t i = 0; i < rules[rule_index].rhs.size(); i++) {
+                    k.push(StackNode(rules[rule_index].rhs[rules[rule_index].rhs.size() - 1 - i]));
                 }
 
-                int rule_index = parse_table[x.symbol][lookahead];
-
-                traversal_stack.top()->children.emplace_back(x.symbol);
-                ParseNode* new_node = &traversal_stack.top()->children.back();
-
-                traversal_stack.push(new_node);
-                k.push(StackNode(true));
-
-                auto& rhs = rules[rule_index].rhs;
-
-                for (int i = (int)rhs.size() - 1; i >= 0; i--) {
-                    k.push(StackNode(false, rhs[i]));
-                }
-            } 
-            else {
-                if (!x.symbol.is_lambda()) {
-                    if (ts.stream.empty() ||
-                        x.symbol.representation != ts.stream.front().token_type) {
-                        std::cerr << "Parse error\n";
-                        exit(1);
-                    }
-
-                    traversal_stack.top()->children.emplace_back(
-                        x.symbol,
-                        ts.stream.front()
-                    );
-
-                    ts.stream.pop_front();
-                } 
-                else {
-                    traversal_stack.top()->children.emplace_back(x.symbol);
-                }
+            } else if (x.symbol.is_lambda()) {
+                // Add x as a child to traversal_stack.top()
+                traversal_stack.top()->children.push_back(std::make_unique<ParseNode>(x.symbol));
+            } else {
+                // Add x as a child to traversal_stack.top()
+                traversal_stack.top()->children.push_back(std::make_unique<ParseNode>(ts.stream.front()));
+                // Pop one token from the front of ts
+                ts.stream.pop_front();
             }
         }
 
@@ -411,7 +404,7 @@ private:
             } else {
                 current_alternative.push_back(Symbol{wss[i]});
             }
-        
+
             i++;
         }
 
@@ -549,6 +542,27 @@ int main(int argc, char* argv[]) {
         }
         std::cout << '\n';
     }
+
+    TokenStream ts(argv[2]);
+    auto rootNode = g.ll_tabular_parsing(ts);
+    std::function<void(const Grammar::ParseNode&, int)> dfs = [&](const Grammar::ParseNode& node, int depth) {
+        for(int i = 0; i < depth; i++) {
+            std::cout<<" ";
+        }
+        if (node.children.empty()) {
+            std::cout<<node.token.token_type;
+            if (node.token.src_value != "") {
+                std::cout<<" (" << node.token.src_value << ")";
+            }
+            std::cout<<"\n";
+        } else {
+            std::cout<<node.symbol.representation<<"\n";
+        }
+        for(auto &child : node.children) {
+            dfs(*child, depth + 2);
+        }
+    };
+    dfs(*rootNode, 0);
 
     return 0;
 }
