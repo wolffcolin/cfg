@@ -45,6 +45,70 @@ struct Rule {
     }
 };
 
+// lga15
+// TOKENTYPE and srcValue
+struct Token {
+    std::string type;
+    std::string srcValue;
+};
+
+// lga15
+// Simple parse tree node, just a symbol with a list of children
+struct ParseNode {
+    Symbol symbol;
+    std::vector<ParseNode*> children;
+};
+
+// lga15
+// Reads tokens from a file and lets the parser go through them
+class TokenStream {
+private:
+    std::vector<Token> tokens;
+    size_t index = 0;
+
+public:
+    TokenStream(const std::string& path) {
+        std::ifstream infile(path);
+        if (!infile) {
+            std::cerr << "Error opening token file\n";
+            exit(1);
+        }
+
+        std::string line;
+        while (std::getline(infile, line)) {
+            if (line.empty()) {
+                continue;
+            }
+
+            std::istringstream iss(line);
+            Token tok;
+            iss >> tok.type;
+
+            if (!(iss >> tok.srcValue)) {
+                tok.srcValue = "";
+            }
+
+            tokens.push_back(tok);
+        }
+
+        // Add EOF token at the end so the parser knows when input is finished
+        tokens.push_back(Token{"$", ""});
+    }
+
+    Token peek() const {
+        if (index < tokens.size()) {
+            return tokens[index];
+        }
+        return Token{"$", ""};
+    }
+
+    void advance() {
+        if (index < tokens.size()) {
+            index++;
+        }
+    }
+};
+
 class Grammar {
 public:
     std::set<Symbol> symbols;
@@ -233,6 +297,37 @@ public:
         return false;
     }
 
+    // lga15
+    // Builds a parse tree starting from the grammar's start symbol and uses the LL(1) parsing table to decide which production to use
+    ParseNode* buildParseTree(TokenStream& ts) {
+        ParseNode* root = parseSymbol(start_symbol, ts);
+
+        if (root == nullptr) {
+            return nullptr;
+        }
+
+        Symbol lookahead{ts.peek().type};
+
+        return root;
+    }
+
+    // lga15
+    // Prints the parse tree in an indented format
+    void printParseTree(ParseNode* node, int depth = 0) const {
+        if (node == nullptr) {
+            return;
+        }
+
+        for (int i = 0; i < depth; i++) {
+            std::cout << "   ";
+        }
+        std::cout << node->symbol << "\n";
+
+        for (ParseNode* child : node->children) {
+            printParseTree(child, depth + 1);
+        }
+    }
+
 private:
     void parse_rules(std::string path) {
         std::ifstream infile(path);
@@ -337,12 +432,66 @@ private:
         }
     }
 
+    // lga15
+    // If the symbol is:
+    // lambda -> make a lambda node
+    // terminal -> match against current input token
+    // nonterminal -> use parsing table to choose the correct rule
+    ParseNode* parseSymbol(const Symbol& sym, TokenStream& ts) {
+        ParseNode* node = new ParseNode{sym, {}};
 
+        // lambda is represented as a leaf node
+        if (sym.is_lambda()) {
+            return node;
+        }
+
+        // If this is a terminal or EOF, it must match the current token
+        if (terminals.count(sym) || sym.is_eof()) {
+            Symbol lookahead{ts.peek().type};
+
+            if (sym == lookahead) {
+                ts.advance();
+                return node;
+            } else {
+                std::cerr << "Parse error: expected " << sym
+                          << " but found " << lookahead << "\n";
+                delete node;
+                return nullptr;
+            }
+        }
+
+        // Otherwise this is a nonterminal, so consult the LL(1) parsing table
+        Symbol lookahead{ts.peek().type};
+
+        if (parsingTable.count(sym) == 0 || parsingTable.at(sym).count(lookahead) == 0) {
+            std::cerr << "Parse error: no parsing table entry for ("
+                      << sym << ", " << lookahead << ")\n";
+            delete node;
+            return nullptr;
+        }
+
+        uint ruleIndex = parsingTable.at(sym).at(lookahead);
+        const Rule& rule = rules[ruleIndex];
+
+        // Expand the nonterminal using the selected rule
+        for (const Symbol& rhsSym : rule.rhs) {
+            ParseNode* child = parseSymbol(rhsSym, ts);
+            if (child == nullptr) {
+                delete node;
+                return nullptr;
+            }
+            node->children.push_back(child);
+        }
+
+        return node;
+    }
 };
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <filename>\n";
+    // lga15
+    // Now expects two command line arguments: the grammar file and the token file.
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <grammar file> <token file>\n";
         return 1;
     }
 
@@ -382,7 +531,6 @@ int main(int argc, char* argv[]) {
         std::cout << a.representation << ' ';
     }
     std::cout << '\n';
-
     
     std::cout << "follow_set A:\n";
     st = std::set<Symbol>();
@@ -412,6 +560,18 @@ int main(int argc, char* argv[]) {
             std::cout << p.first << ':' << p.second << ' ';
         }
         std::cout << '\n';
+    }
+
+    // lga15
+    // Build the parse tree from the token stream using the LL(1) parsing table.
+    TokenStream ts(argv[2]);
+    ParseNode* root = g.buildParseTree(ts);
+
+    // lga15
+    // Print the parse tree
+    if (root != nullptr) {
+        std::cout << "Parse Tree:\n";
+        g.printParseTree(root);
     }
 
     return 0;
