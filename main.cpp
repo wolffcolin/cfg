@@ -6,6 +6,7 @@
 #include <vector>
 #include <fstream>
 #include <sstream>
+#include <functional>
 
 struct Symbol {
     std::string representation;
@@ -59,6 +60,133 @@ struct ParseNode {
     std::vector<ParseNode*> children;
 };
 
+// lga18
+// Creates a new parse/AST node with a custom symbol name
+ParseNode* makeNode(const std::string& name) {
+    return new ParseNode{Symbol{name}, {}};
+}
+
+// lga18
+// Recursively frees an entire parse tree
+void deleteParseTree(ParseNode* node) {
+    if (!node) return;
+    for (ParseNode* child : node->children) {
+        deleteParseTree(child);
+    }
+    delete node;
+}
+
+// lga18
+// Removes lambda children from a node in place
+void removeLambdaChildren(ParseNode* node) {
+    if (!node) return;
+
+    std::vector<ParseNode*> kept;
+    for (ParseNode* child : node->children) {
+        if (child->symbol.is_lambda()) {
+            deleteParseTree(child);
+        } else {
+            kept.push_back(child);
+        }
+    }
+    node->children = kept;
+}
+
+// lga18
+// Reorders children according to the given permutation
+void reorderChildren(ParseNode* node, const std::vector<size_t>& order) {
+    if (!node) return;
+    if (order.size() != node->children.size()) return;
+
+    std::vector<ParseNode*> old = node->children;
+    std::vector<ParseNode*> neu;
+    std::vector<bool> used(old.size(), false);
+
+    for (size_t idx : order) {
+        if (idx >= old.size() || used[idx]) return;
+        neu.push_back(old[idx]);
+        used[idx] = true;
+    }
+
+    node->children = neu;
+}
+
+// lga18
+// Scans a regular expression string into the terminal tokens of the RE grammar
+std::vector<Token> scanRegex(const std::string& input) {
+    std::vector<Token> out;
+
+    for (size_t i = 0; i < input.size(); i++) {
+        char c = input[i];
+
+        if (c == '\\') {
+            if (i + 1 >= input.size()) {
+                std::cerr << "Scanner error: dangling backslash\n";
+                exit(1);
+            }
+
+            char e = input[++i];
+            switch (e) {
+                case '|': out.push_back({"char", "|"}); break;
+                case '*': out.push_back({"char", "*"}); break;
+                case '+': out.push_back({"char", "+"}); break;
+                case '.': out.push_back({"char", "."}); break;
+                case '(': out.push_back({"char", "("}); break;
+                case ')': out.push_back({"char", ")"}); break;
+                case '-': out.push_back({"char", "-"}); break;
+                case 's': out.push_back({"char", "x20"}); break;
+                case 'n': out.push_back({"char", "x0a"}); break;
+                case '\\': out.push_back({"char", "\\"}); break;
+                default:
+                    std::cerr << "Scanner error: invalid escape \\" << e << "\n";
+                    exit(1);
+            }
+            continue;
+        }
+
+        switch (c) {
+            case '(':
+                out.push_back({"open", "("});
+                break;
+            case ')':
+                out.push_back({"close", ")"});
+                break;
+            case '|':
+                out.push_back({"pipe", "|"});
+                break;
+            case '*':
+                out.push_back({"kleene", "*"});
+                break;
+            case '+':
+                out.push_back({"plus", "+"});
+                break;
+            case '.':
+                out.push_back({"dot", "."});
+                break;
+            case '-':
+                out.push_back({"dash", "-"});
+                break;
+            default:
+                out.push_back({"char", std::string(1, c)});
+                break;
+        }
+    }
+
+    return out;
+}
+
+// lga18
+// Prints a token stream in the same two column style as token files
+void printTokenStream(const std::vector<Token>& toks) {
+    for (const Token& tok : toks) {
+        if (tok.srcValue.empty()) {
+            std::cout << tok.type << "\n";
+        } else {
+            std::cout << tok.type << " " << tok.srcValue << "\n";
+        }
+    }
+}
+
 // lga15
 // Reads tokens from a file and lets the parser go through them
 class TokenStream {
@@ -92,6 +220,12 @@ public:
         }
 
         // Add EOF token at the end so the parser knows when input is finished
+        tokens.push_back(Token{"$", ""});
+    }
+
+    // lga18
+    // Allows the parser to consume tokens produced directly by the regex scanner
+    TokenStream(const std::vector<Token>& toks) : tokens(toks), index(0) {
         tokens.push_back(Token{"$", ""});
     }
 
@@ -311,6 +445,16 @@ public:
         return root;
     }
 
+    // lga18
+    // Same as buildParseTree, but intended for the AST/SDT version of the parse
+    ParseNode* buildAST(TokenStream& ts) {
+        ParseNode* root = parseSymbolSDT(start_symbol, ts);
+        if (root == nullptr) {
+            return nullptr;
+        }
+        return root;
+    }
+
     // lga15
     // Prints the parse tree in an indented format
     void printParseTree(ParseNode* node, int depth = 0) const {
@@ -325,6 +469,17 @@ public:
 
         for (ParseNode* child : node->children) {
             printParseTree(child, depth + 1);
+        }
+    }
+
+    // lga18
+    // Convenience function for printing an AST built with SDT hooks
+    void demoAST(TokenStream& ts) {
+        ParseNode* root = buildAST(ts);
+        if (root != nullptr) {
+            std::cout << "AST:\n";
+            printParseTree(root);
+            deleteParseTree(root);
         }
     }
 
@@ -485,6 +640,207 @@ private:
 
         return node;
     }
+
+    // lga18
+    // Demo transformation for requirement 2(a):
+    // rotates a 3-child node from x Y z into Y z x
+    void sdtRotateThree(ParseNode* node) {
+        if (!node) return;
+        if (node->children.size() == 3) {
+            reorderChildren(node, {1, 2, 0});
+        }
+    }
+
+    // lga18
+    // Demo transformation for requirement 2(b):
+    // flattens B -> g B into a single B with many g children
+    void sdtFlattenRecursiveB(ParseNode* node) {
+        if (!node) return;
+        if (node->symbol.representation != "B") return;
+        if (node->children.size() != 2) return;
+
+        ParseNode* first = node->children[0];
+        ParseNode* second = node->children[1];
+
+        if (second->symbol.representation != "B") return;
+
+        std::vector<ParseNode*> flat;
+        flat.push_back(first);
+
+        for (ParseNode* child : second->children) {
+            flat.push_back(child);
+        }
+        second->children.clear();
+        delete second;
+
+        node->children = flat;
+    }
+
+    // lga18
+    // Optional regex-specific simplification for NUCLEUS nodes
+    void sdtSimplifyNucleus(ParseNode* node) {
+        if (!node) return;
+        if (node->symbol.representation != "NUCLEUS") return;
+
+        removeLambdaChildren(node);
+
+        // NUCLEUS -> open ALT close
+        if (node->children.size() == 3 &&
+            node->children[0]->symbol.representation == "open" &&
+            node->children[1]->symbol.representation == "ALT" &&
+            node->children[2]->symbol.representation == "close") {
+
+            ParseNode* alt = node->children[1];
+            node->symbol = alt->symbol;
+
+            std::vector<ParseNode*> adopted = alt->children;
+            alt->children.clear();
+
+            deleteParseTree(node->children[0]);
+            delete alt;
+            deleteParseTree(node->children[2]);
+
+            node->children = adopted;
+            return;
+        }
+
+        // NUCLEUS -> dot
+        if (node->children.size() == 1 &&
+            node->children[0]->symbol.representation == "dot") {
+
+            ParseNode* dot = node->children[0];
+            node->symbol = dot->symbol;
+            node->children.clear();
+            delete dot;
+            return;
+        }
+
+        // NUCLEUS -> char CHARRNG
+        if (node->children.size() == 2 &&
+            node->children[0]->symbol.representation == "char" &&
+            node->children[1]->symbol.representation == "CHARRNG") {
+
+            ParseNode* c0 = node->children[0];
+            ParseNode* rng = node->children[1];
+            removeLambdaChildren(rng);
+
+            // CHARRNG -> dash char
+            if (rng->children.size() == 2 &&
+                rng->children[0]->symbol.representation == "dash" &&
+                rng->children[1]->symbol.representation == "char") {
+
+                ParseNode* c1 = rng->children[1];
+                ParseNode* rangeNode = makeNode("range");
+                rangeNode->children.push_back(c0);
+                rangeNode->children.push_back(c1);
+
+                rng->children.clear();
+                deleteParseTree(rng);
+
+                node->symbol = rangeNode->symbol;
+                node->children = rangeNode->children;
+                rangeNode->children.clear();
+                delete rangeNode;
+                return;
+            }
+
+            // CHARRNG -> lambda
+            if (rng->children.empty()) {
+                delete rng;
+                node->symbol = c0->symbol;
+                node->children.clear();
+                delete c0;
+                return;
+            }
+        }
+    }
+
+    // lga18
+    // Dispatches SDT actions after a production has finished parsing
+    void applySDT(uint ruleIndex, ParseNode* node) {
+        if (!node) return;
+
+        removeLambdaChildren(node);
+
+        // Demo rotation: A -> x Y z
+        if (rules[ruleIndex].lhs.representation == "A" &&
+            rules[ruleIndex].rhs.size() == 3 &&
+            rules[ruleIndex].rhs[0].representation == "x" &&
+            rules[ruleIndex].rhs[1].representation == "Y" &&
+            rules[ruleIndex].rhs[2].representation == "z") {
+            sdtRotateThree(node);
+            return;
+        }
+
+        // Demo flatten: B -> g B
+        if (rules[ruleIndex].lhs.representation == "B" &&
+            rules[ruleIndex].rhs.size() == 2 &&
+            rules[ruleIndex].rhs[0].representation == "g" &&
+            rules[ruleIndex].rhs[1].representation == "B") {
+            sdtFlattenRecursiveB(node);
+            return;
+        }
+
+        // Regex simplification example
+        if (rules[ruleIndex].lhs.representation == "NUCLEUS") {
+            sdtSimplifyNucleus(node);
+            return;
+        }
+    }
+
+    // lga18
+    // Recursive-descent parse that runs SDT when each production finishes
+    ParseNode* parseSymbolSDT(const Symbol& sym, TokenStream& ts) {
+        ParseNode* node = new ParseNode{sym, {}};
+
+        if (sym.is_lambda()) {
+            return node;
+        }
+
+        if (terminals.count(sym) || sym.is_eof()) {
+            Symbol lookahead{ts.peek().type};
+
+            if (sym == lookahead) {
+                ts.advance();
+                return node;
+            } else {
+                std::cerr << "Parse error: expected " << sym
+                          << " but found " << lookahead << "\n";
+                delete node;
+                return nullptr;
+            }
+        }
+
+        Symbol lookahead{ts.peek().type};
+
+        if (parsingTable.count(sym) == 0 || parsingTable.at(sym).count(lookahead) == 0) {
+            std::cerr << "Parse error: no parsing table entry for ("
+                      << sym << ", " << lookahead << ")\n";
+            delete node;
+            return nullptr;
+        }
+
+        uint ruleIndex = parsingTable.at(sym).at(lookahead);
+        const Rule& rule = rules[ruleIndex];
+
+        for (const Symbol& rhsSym : rule.rhs) {
+            ParseNode* child = parseSymbolSDT(rhsSym, ts);
+            if (child == nullptr) {
+                for (ParseNode* existingChild : node->children) {
+                    deleteParseTree(existingChild);
+                }
+                delete node;
+                return nullptr;
+            }
+            node->children.push_back(child);
+        }
+
+        // lga18
+        // This is the SDT hook: fire when the full RHS has been parsed
+        applySDT(ruleIndex, node);
+
+        return node;
+    }
 };
 
 int main(int argc, char* argv[]) {
@@ -573,6 +929,22 @@ int main(int argc, char* argv[]) {
         std::cout << "Parse Tree:\n";
         g.printParseTree(root);
     }
+
+    // lga18
+    // Example AST using the new SDT-enabled parser entry point
+    TokenStream ts2(argv[2]);
+    ParseNode* astRoot = g.buildAST(ts2);
+    if (astRoot != nullptr) {
+        std::cout << "AST:\n";
+        g.printParseTree(astRoot);
+        deleteParseTree(astRoot);
+    }
+
+    // lga18
+    // Example scanner for the RE language
+    std::string re = "Ab(cd-e+)*(.|012)3";
+    std::vector<Token> reTokens = scanRegex(re);
+    printTokenStream(reTokens);
 
     return 0;
 }
